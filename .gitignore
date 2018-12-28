@@ -107,4 +107,4 @@ venv.bak/
 .idea
 
 # private
-.config_prv.json
+config_prv.json
