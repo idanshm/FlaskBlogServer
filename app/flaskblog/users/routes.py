@@ -2,8 +2,8 @@ from flask import render_template, url_for, flash, redirect, request, Blueprint
 from flask_login import login_user, current_user, logout_user, login_required
 from flaskblog import db, bcrypt
 from flaskblog.models import User, Post
-from flaskblog.users.forms import RegistrationForm, LoginForm, UpdateAccountForm, RequestResetForm, ResetPasswordForm
-from flaskblog.users.utils import save_picture, send_reset_email, delete_picture
+from flaskblog.users.forms import RegistrationForm, LoginForm, UpdateAccountForm, RequestResetForm, ResetPasswordForm, ResendVerificationEmailForm
+from flaskblog.users.utils import save_picture, send_reset_email, delete_picture, send_email_confirmation_token
 
 users = Blueprint('users', __name__)
 
@@ -19,7 +19,9 @@ def register():
         user = User(username=form.username.data, email=form.email.data, password=hashed_password)
         db.session.add(user)
         db.session.commit()
-        flash(f'Account created for {form.username.data}!', 'success')
+        user = User.query.filter_by(email=form.email.data).first()
+        send_email_confirmation_token(user)
+        flash(f'Email verification has been sent to {form.email.data}. Please check your mail box.', 'success')
         return redirect(url_for('users.login'))
     return render_template('register.html', title='Register', form=form)
 
@@ -32,9 +34,14 @@ def login():
     if form.validate_on_submit():
         user = User.query.filter_by(email=form.email.data).first()
         if user and bcrypt.check_password_hash(user.password, form.password.data):
-            login_user(user, remember=form.remember.data)
-            next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('main.home'))
+            if not user.email_confirmed:
+                flash(f"Please verify your email.", 'warning')
+                return redirect('complete_registration')
+            else:
+                login_user(user, remember=form.remember.data)
+                next_page = request.args.get('next')
+                flash(f"Login successful!", 'info')
+                return redirect(next_page) if next_page else redirect(url_for('main.home'))
         else:
             flash('Login Unsuccessful. Please check email and password', 'danger')
     return render_template('login.html', title='Login', form=form)
@@ -92,7 +99,7 @@ def reset_request():
 def reset_token(token):
     if current_user.is_authenticated:
         return redirect(url_for('main.home'))
-    user = User.verify_reset_token(token)
+    user = User.verify_token(token)
     if not user:
         flash('That is an invalid or expired token', 'warning')
         return redirect(url_for('users.reset_request'))
@@ -104,3 +111,36 @@ def reset_token(token):
         flash('Your password has been updated! You are now able to log in.', 'success')
         return redirect(url_for('users.login'))
     return render_template('reset_token.html', title='Reset Password', form=form)
+
+
+@users.route("/complete_registration", methods=['GET', 'POST'])
+def complete_registration():
+    if current_user.is_authenticated:
+        return redirect(url_for('main.home'))
+    form = ResendVerificationEmailForm()
+    if form.validate_on_submit():
+        user = User.query.filter_by(email=form.email.data).first()
+        if not user:
+            flash(f'That email does not exist. Please try again.', 'warning')
+        else:
+            send_email_confirmation_token(user)
+            flash(f'Email verification has been sent to {form.email.data}. Please check your mail box.', 'success')
+            return redirect(url_for('users.login'))
+    return render_template('complete_registration.html', title="Complete Registration", form=form)
+
+
+@users.route("/complete_registration/<token>")
+def confirm_token(token):
+    if current_user.is_authenticated:
+        return redirect(url_for('main.home'))
+    user = User.verify_token(token)
+    if not user:
+        flash('That is an invalid or expired token', 'warning')
+        return redirect(url_for('users.complete_registration'))
+
+    user.email_confirmed = True
+    db.session.commit()
+    flash('Your email has been verified! You can now log in.', 'success')
+
+    return redirect(url_for('users.login'))
+
